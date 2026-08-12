@@ -34,7 +34,7 @@ dl "https://repo1.maven.org/maven2/me/lucko/jar-relocator/1.7/jar-relocator-1.7.
 RCP="$TOOLS/asm.jar:$TOOLS/asm-commons.jar:$TOOLS/asm-tree.jar:$TOOLS/asm-analysis.jar:$TOOLS/jar-relocator.jar"
 cp "$ROOT/tools/Relocate.java" .
 javac -cp "$RCP" Relocate.java || { warn "javac failed"; exit 1; }
-relocate_jar(){ java -cp "$TOOLS:$RCP" Relocate "$1" "$2" "$3" "$4" >/dev/null; }
+relocate_jar(){ java -cp "$TOOLS:$RCP" Relocate "$@" >/dev/null; }
 cd "$ROOT"
 STAGE="$WORK/stage"; mkdir -p "$STAGE/META-INF"
 SEEN="$WORK/seen.txt"; : > "$SEEN"; DEXN=0; MERGED=(); SKIPPED=()
@@ -65,7 +65,12 @@ for repo in "${SRCS[@]}"; do
     MERGED+=("$repo"); log "  primary set."
   else
     relj="$WORK/reloc_$idx.jar"
-    relocate_jar "$mpp" "$relj" "app.morphe.patches" "app.morphe.patches_$tag" || { warn "  reloc fail — skip"; SKIPPED+=("$repo:reloc"); idx=$((idx+1)); continue; }
+    # Discover this source's shared patch-library roots (app/<root>/patches) and relocate each,
+    # so its copies never clash with another source built against a different patcher version.
+    SRC_ROOTS=$( (cd "$ex" && ls -d app/*/patches 2>/dev/null) | awk -F/ '{print $2}' | sort -u )
+    [ -z "$SRC_ROOTS" ] && SRC_ROOTS="morphe"
+    RARGS=(); for r in $SRC_ROOTS; do RARGS+=("app.$r.patches" "app.$r.patches_$tag"); done
+    relocate_jar "$mpp" "$relj" "${RARGS[@]}" || { warn "  reloc fail — skip"; SKIPPED+=("$repo:reloc"); idx=$((idx+1)); continue; }
     rex="$WORK/rex_$idx"; rm -rf "$rex"; mkdir -p "$rex"; unzip -oq "$relj" -d "$rex"
     (cd "$rex" && find . -type f ! -name 'classes*.dex' ! -path './META-INF/MANIFEST.MF' | while IFS= read -r f; do
         [ -e "$STAGE/$f" ] || { mkdir -p "$STAGE/$(dirname "$f")"; cp "$f" "$STAGE/$f"; }; done)
@@ -73,8 +78,10 @@ for repo in "${SRCS[@]}"; do
     for dx in "$ex"/classes*.dex; do
       sm="$WORK/sm_${idx}_$(basename "$dx")"; rm -rf "$sm"
       baksmali disassemble "$dx" -o "$sm" 2>/dev/null || { ok=0; break; }
-      find "$sm" -name '*.smali' -exec sed -i "s#Lapp/morphe/patches/#Lapp/morphe/patches_${tag}/#g" {} +
-      if [ -d "$sm/app/morphe/patches" ]; then mkdir -p "$sm/app/morphe/patches_${tag}"; cp -r "$sm/app/morphe/patches/." "$sm/app/morphe/patches_${tag}/"; rm -rf "$sm/app/morphe/patches"; fi
+      for r in $SRC_ROOTS; do
+        find "$sm" -name '*.smali' -exec sed -i "s#Lapp/$r/patches/#Lapp/$r/patches_${tag}/#g" {} +
+        if [ -d "$sm/app/$r/patches" ]; then mkdir -p "$sm/app/$r/patches_${tag}"; cp -r "$sm/app/$r/patches/." "$sm/app/$r/patches_${tag}/"; rm -rf "$sm/app/$r/patches"; fi
+      done
       (cd "$sm" && while IFS= read -r f; do grep -qxF "$f" "$SEEN" && rm -f "$f"; done < <(find . -name '*.smali'))
       if find "$sm" -name '*.smali' | grep -q .; then
         DEXN=$((DEXN+1)); outdex="$STAGE/classes$((DEXN+1)).dex"
