@@ -1,0 +1,4 @@
+work/
+dist/
+tools/*.jar
+tools/*.class

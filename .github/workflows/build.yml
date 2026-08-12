@@ -1,0 +1,56 @@
+name: Build aggregated bundle
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths: [ "sources.json", "build.sh", "tools/**", ".github/workflows/build.yml" ]
+  schedule:
+    - cron: "17 4 * * *"   # daily 04:17 UTC — pick up upstream patch updates
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install smali/baksmali, jq, zip
+        run: sudo apt-get update && sudo apt-get install -y smali jq zip unzip
+
+      - name: Build merged bundle
+        id: build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_SLUG: ${{ github.repository }}
+        run: bash build.sh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.build.outputs.VERSION }}"
+          # replace any existing release/tag for today so the asset URL stays stable
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" dist/morphe-all.mpp \
+            --title "Morphe All-in-One $TAG" \
+            --notes-file dist/merge-report.md
+
+      - name: Commit patches-bundle.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add patches-bundle.json
+          git commit -m "chore: update bundle metadata (${{ steps.build.outputs.VERSION }}, ${{ steps.build.outputs.MERGED_COUNT }} sources)" || echo "no changes"
+          git push
