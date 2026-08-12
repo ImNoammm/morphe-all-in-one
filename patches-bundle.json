@@ -1,6 +1,6 @@
 {
-  "version": "v0.0.0",
-  "download_url": "https://github.com/ImNoammm/morphe-all-in-one/releases/latest/download/morphe-all.mpp",
-  "created_at": "2026-08-12T00:00:00Z",
-  "description": "Initial placeholder — the first scheduled build replaces this with the real aggregated bundle."
+  "version": "v2026.08.12",
+  "download_url": "https://github.com/ImNoammm/morphe-all-in-one/releases/download/v2026.08.12/morphe-all.mpp",
+  "created_at": "2026-08-12T19:18:30Z",
+  "description": "Aggregated Morphe community patches from 66 repositories. Rebuilt 2026-08-12T19:18:30Z."
 }
