@@ -65,12 +65,15 @@ for repo in "${SRCS[@]}"; do
     MERGED+=("$repo"); log "  primary set."
   else
     relj="$WORK/reloc_$idx.jar"
-    # Discover this source's shared patch-library roots (app/<root>/patches) and relocate each,
-    # so its copies never clash with another source built against a different patcher version.
-    SRC_ROOTS=$( (cd "$ex" && ls -d app/*/patches 2>/dev/null) | awk -F/ '{print $2}' | sort -u )
-    [ -z "$SRC_ROOTS" ] && SRC_ROOTS="morphe"
-    RARGS=(); for r in $SRC_ROOTS; do RARGS+=("app.$r.patches" "app.$r.patches_$tag"); done
-    relocate_jar "$mpp" "$relj" "${RARGS[@]}" || { warn "  reloc fail — skip"; SKIPPED+=("$repo:reloc"); idx=$((idx+1)); continue; }
+    # Discover this source's bundled patch-library subpackages (app/<root>/<sub>) and relocate each
+    # — everything except the host-provided framework app.morphe.patcher and apply-time extensions —
+    # so this source's copies never clash with, or break against, another source built on a
+    # different patcher version.
+    SRC_SUBS=$( (cd "$ex" && ls -d app/*/* 2>/dev/null) | awk -F/ '{print $2"/"$3}' | grep -vE '^morphe/patcher$|/extension$' | sort -u )
+    RARGS=(); for sp in $SRC_SUBS; do r="${sp%/*}"; sub="${sp#*/}"; RARGS+=("app.$r.$sub" "app.$r.${sub}_$tag"); done
+    if [ ${#RARGS[@]} -gt 0 ]; then
+      relocate_jar "$mpp" "$relj" "${RARGS[@]}" || { warn "  reloc fail — skip"; SKIPPED+=("$repo:reloc"); idx=$((idx+1)); continue; }
+    else cp "$mpp" "$relj"; fi
     rex="$WORK/rex_$idx"; rm -rf "$rex"; mkdir -p "$rex"; unzip -oq "$relj" -d "$rex"
     (cd "$rex" && find . -type f ! -name 'classes*.dex' ! -path './META-INF/MANIFEST.MF' | while IFS= read -r f; do
         [ -e "$STAGE/$f" ] || { mkdir -p "$STAGE/$(dirname "$f")"; cp "$f" "$STAGE/$f"; }; done)
@@ -78,9 +81,10 @@ for repo in "${SRCS[@]}"; do
     for dx in "$ex"/classes*.dex; do
       sm="$WORK/sm_${idx}_$(basename "$dx")"; rm -rf "$sm"
       baksmali disassemble "$dx" -o "$sm" 2>/dev/null || { ok=0; break; }
-      for r in $SRC_ROOTS; do
-        find "$sm" -name '*.smali' -exec sed -i "s#Lapp/$r/patches/#Lapp/$r/patches_${tag}/#g" {} +
-        if [ -d "$sm/app/$r/patches" ]; then mkdir -p "$sm/app/$r/patches_${tag}"; cp -r "$sm/app/$r/patches/." "$sm/app/$r/patches_${tag}/"; rm -rf "$sm/app/$r/patches"; fi
+      for sp in $SRC_SUBS; do
+        r="${sp%/*}"; sub="${sp#*/}"
+        find "$sm" -name '*.smali' -exec sed -i "s#Lapp/$r/$sub/#Lapp/$r/${sub}_${tag}/#g" {} +
+        if [ -d "$sm/app/$r/$sub" ]; then mkdir -p "$sm/app/$r/${sub}_${tag}"; cp -r "$sm/app/$r/$sub/." "$sm/app/$r/${sub}_${tag}/"; rm -rf "$sm/app/$r/$sub"; fi
       done
       (cd "$sm" && while IFS= read -r f; do grep -qxF "$f" "$SEEN" && rm -f "$f"; done < <(find . -name '*.smali'))
       if find "$sm" -name '*.smali' | grep -q .; then
