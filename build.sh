@@ -17,7 +17,13 @@ GH_TOKEN="${GITHUB_TOKEN:-}"; API="https://api.github.com"
 OUT_MPP="$DIST/morphe-all.mpp"
 REPO_SLUG="${REPO_SLUG:-ImNoammm/morphe-all-in-one}"
 VERSION="${VERSION:-v$(date -u +%Y.%m.%d)}"
-CREATED_AT="${CREATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+# Morphe decodes created_at as kotlinx.datetime.LocalDateTime, not Instant.
+# Keep the value timezone-free: a trailing Z or offset makes the entire source fail to parse.
+CREATED_AT="${CREATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%S)}"
+if [[ ! "$CREATED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+  printf 'Invalid CREATED_AT for Morphe LocalDateTime: %s\n' "$CREATED_AT" >&2
+  exit 1
+fi
 log(){ printf ':: %s\n' "$*" >&2; }
 warn(){ printf '!! %s\n' "$*" >&2; }
 rm -rf "$WORK" "$DIST"; mkdir -p "$WORK" "$TOOLS" "$DIST"
