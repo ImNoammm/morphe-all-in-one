@@ -41,6 +41,25 @@ jobs:
           REPO_SLUG: ${{ github.repository }}
         run: bash build.sh
 
+      - name: Load-test with Morphe Desktop
+        env:
+          MORPHE_DESKTOP_VERSION: "1.13.1"
+        run: |
+          DESKTOP_JAR="$RUNNER_TEMP/morphe-desktop.jar"
+          PATCH_LIST="$RUNNER_TEMP/patches.txt"
+          curl -fsSL --retry 3 --proto '=https' --proto-redir '=https' \
+            -o "$DESKTOP_JAR" \
+            "https://github.com/MorpheApp/morphe-desktop/releases/download/v$MORPHE_DESKTOP_VERSION/morphe-desktop-$MORPHE_DESKTOP_VERSION-all.jar"
+          java -jar "$DESKTOP_JAR" list-patches \
+            --patches=dist/morphe-all.mpp --out="$PATCH_LIST"
+          PATCH_COUNT="$(grep -c '^Index:' "$PATCH_LIST")"
+          test "$PATCH_COUNT" -gt 0
+          {
+            echo
+            echo "## Verification"
+            echo "- Morphe Desktop $MORPHE_DESKTOP_VERSION loaded $PATCH_COUNT patches."
+          } >> dist/merge-report.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

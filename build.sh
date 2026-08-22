@@ -39,6 +39,11 @@ curl_gh(){
 # Bundle metadata controls download_url. Never send the GitHub token to that URL
 # (or to GitLab); authenticated requests are restricted to api.github.com above.
 curl_public(){ curl -fsSL --retry 3 --proto '=https' --proto-redir '=https' "$1" -o "$2"; }
+is_mpp_url(){
+  local path="${1%%\?*}"
+  path="${path%%\#*}"
+  [[ "${path,,}" == https://*.mpp ]]
+}
 log "Fetching build tools ..."
 cd "$TOOLS"
 dl(){ [ -f "$2" ] || curl -sL -o "$2" "$1"; }
@@ -69,7 +74,7 @@ for repo in "${SRCS[@]}"; do
         pb="$WORK/pb_$idx.json"; rm -f "$pb"
         curl_public "https://raw.githubusercontent.com/$repo/$br/patches-bundle.json" "$pb" || true
         u="$(jq -r '.download_url // empty' "$pb" 2>/dev/null)"
-        [ -n "$u" ] && { mpp_url="$u"; break; }
+        is_mpp_url "$u" && { mpp_url="$u"; break; }
       done
       if [ -z "$mpp_url" ]; then
         meta="$WORK/rel_$idx.json"; rm -f "$meta"
@@ -85,19 +90,16 @@ for repo in "${SRCS[@]}"; do
         pb="$WORK/pb_$idx.json"; rm -f "$pb"
         curl_public "https://gitlab.com/$repo/-/raw/$br/patches-bundle.json" "$pb" || true
         u="$(jq -r '.download_url // empty' "$pb" 2>/dev/null)"
-        [ -n "$u" ] && { mpp_url="$u"; break; }
+        is_mpp_url "$u" && { mpp_url="$u"; break; }
       done
       if [ -z "$mpp_url" ]; then
         encoded="$(jq -rn --arg v "$repo" '$v|@uri')"
         meta="$WORK/rel_$idx.json"; rm -f "$meta"
         curl_public "https://gitlab.com/api/v4/projects/$encoded/releases/permalink/latest" "$meta" || true
         mpp_url="$(jq -r '[.assets.links[]? |
-          select(
-            ((.name // "" | ascii_downcase) | endswith(".mpp")) or
-            ((.direct_asset_url // "" | ascii_downcase) | endswith(".mpp")) or
-            ((.url // "" | ascii_downcase) | endswith(".mpp"))
-          ) |
-          (.direct_asset_url // .url // empty)][0] // empty' "$meta" 2>/dev/null)"
+          (.direct_asset_url // .url // empty) |
+          select((split("?")[0] | split("#")[0] | ascii_downcase) | endswith(".mpp"))
+        ][0] // empty' "$meta" 2>/dev/null)"
         [[ "$mpp_url" == /* ]] && mpp_url="https://gitlab.com$mpp_url"
       fi
       ;;
@@ -106,7 +108,7 @@ for repo in "${SRCS[@]}"; do
       SKIPPED+=("$source_id:unsupported-host"); idx=$((idx+1)); continue
       ;;
   esac
-  [[ "$mpp_url" == https://* ]] || mpp_url=""
+  is_mpp_url "$mpp_url" || mpp_url=""
   [ -z "$mpp_url" ] && { warn "  no .mpp — skip"; SKIPPED+=("$source_id:no-mpp"); idx=$((idx+1)); continue; }
   mpp="$WORK/src_$idx.mpp"; rm -f "$mpp"
   curl_public "$mpp_url" "$mpp" || true

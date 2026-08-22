@@ -73,9 +73,9 @@ bundled `app/<root>/<subpackage>` libraries to a source-specific package in **bo
 Host-provided `morphe/patcher` and apply-time `*/extension` packages are excluded. Each source
 then references its own matching helpers, while shared framework classes are de-duplicated.
 
-The pipeline validates every downloaded archive, validates the final `.mpp`, and publishes an
-exact merged/skipped report. Release-specific Morphe Desktop results are reported only after a
-real load test.
+Before publication, the pipeline validates every downloaded archive and the final `.mpp`, then
+loads the combined bundle with Morphe Desktop. The Release report records the exact merged/skipped
+sources and the verified patch count.
 
 ### Notes & trade-offs
 - When several repositories patch the **same app**, their patches coexist but are not guaranteed
