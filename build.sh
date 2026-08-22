@@ -27,8 +27,18 @@ fi
 log(){ printf ':: %s\n' "$*" >&2; }
 warn(){ printf '!! %s\n' "$*" >&2; }
 rm -rf "$WORK" "$DIST"; mkdir -p "$WORK" "$TOOLS" "$DIST"
-curl_gh(){ if [ -n "$GH_TOKEN" ]; then curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$1" -o "$2"; else curl -sL -H "Accept: application/vnd.github+json" "$1" -o "$2"; fi; }
-curl_dl(){ if [ -n "$GH_TOKEN" ]; then curl -sL -H "Authorization: Bearer $GH_TOKEN" "$1" -o "$2"; else curl -sL "$1" -o "$2"; fi; }
+curl_gh(){
+  if [ -n "$GH_TOKEN" ]; then
+    curl -fsSL --retry 3 --proto '=https' --proto-redir '=https' \
+      -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$1" -o "$2"
+  else
+    curl -fsSL --retry 3 --proto '=https' --proto-redir '=https' \
+      -H "Accept: application/vnd.github+json" "$1" -o "$2"
+  fi
+}
+# Bundle metadata controls download_url. Never send the GitHub token to that URL
+# (or to GitLab); authenticated requests are restricted to api.github.com above.
+curl_public(){ curl -fsSL --retry 3 --proto '=https' --proto-redir '=https' "$1" -o "$2"; }
 log "Fetching build tools ..."
 cd "$TOOLS"
 dl(){ [ -f "$2" ] || curl -sL -o "$2" "$1"; }
@@ -45,22 +55,64 @@ cd "$ROOT"
 STAGE="$WORK/stage"; mkdir -p "$STAGE/META-INF"
 SEEN="$WORK/seen.txt"; : > "$SEEN"; DEXN=0; MERGED=(); SKIPPED=()
 mapfile -t SRCS < <(jq -r '.sources[].repo' "$SOURCES_JSON")
+mapfile -t HOSTS < <(jq -r '.sources[] | (.host // .source // "github") | ascii_downcase' "$SOURCES_JSON")
+[ "${#SRCS[@]}" -eq "${#HOSTS[@]}" ] || { warn "Source/provider count mismatch."; exit 1; }
 idx=0
 for repo in "${SRCS[@]}"; do
-  tag="s${idx}"; log "[$idx] $repo"
-  meta="$WORK/rel_$idx.json"; curl_gh "$API/repos/$repo/releases/latest" "$meta"
-  mpp_url="$(jq -r '[.assets[]?|select(.name|endswith(".mpp"))][0].browser_download_url // empty' "$meta" 2>/dev/null)"
-  if [ -z "$mpp_url" ]; then
-    for br in main master; do
-      pb="$WORK/pb_$idx.json"; curl_dl "https://raw.githubusercontent.com/$repo/$br/patches-bundle.json" "$pb"
-      u="$(jq -r '.download_url // empty' "$pb" 2>/dev/null)"; [ -n "$u" ] && { mpp_url="$u"; break; }
-    done
-  fi
-  [ -z "$mpp_url" ] && { warn "  no .mpp — skip"; SKIPPED+=("$repo:no-mpp"); idx=$((idx+1)); continue; }
-  mpp="$WORK/src_$idx.mpp"; curl_dl "$mpp_url" "$mpp"
-  unzip -tq "$mpp" >/dev/null 2>&1 || { warn "  bad archive — skip"; SKIPPED+=("$repo:bad"); idx=$((idx+1)); continue; }
+  provider="${HOSTS[$idx]}"; source_id="$provider:$repo"
+  tag="s${idx}"; log "[$idx] $source_id"
+  mpp_url=""
+  case "$provider" in
+    github)
+      # Match Morphe itself: patches-bundle.json is authoritative; release assets are fallback.
+      for br in main master; do
+        pb="$WORK/pb_$idx.json"; rm -f "$pb"
+        curl_public "https://raw.githubusercontent.com/$repo/$br/patches-bundle.json" "$pb" || true
+        u="$(jq -r '.download_url // empty' "$pb" 2>/dev/null)"
+        [ -n "$u" ] && { mpp_url="$u"; break; }
+      done
+      if [ -z "$mpp_url" ]; then
+        meta="$WORK/rel_$idx.json"; rm -f "$meta"
+        curl_gh "$API/repos/$repo/releases/latest" "$meta" || true
+        mpp_url="$(jq -r '[.assets[]? |
+          select((.name // "" | ascii_downcase) | endswith(".mpp"))][0].browser_download_url //
+          empty' "$meta" 2>/dev/null)"
+      fi
+      ;;
+    gitlab)
+      # Stable branch metadata is preferred because GitLab's latest release can be a dev build.
+      for br in main master; do
+        pb="$WORK/pb_$idx.json"; rm -f "$pb"
+        curl_public "https://gitlab.com/$repo/-/raw/$br/patches-bundle.json" "$pb" || true
+        u="$(jq -r '.download_url // empty' "$pb" 2>/dev/null)"
+        [ -n "$u" ] && { mpp_url="$u"; break; }
+      done
+      if [ -z "$mpp_url" ]; then
+        encoded="$(jq -rn --arg v "$repo" '$v|@uri')"
+        meta="$WORK/rel_$idx.json"; rm -f "$meta"
+        curl_public "https://gitlab.com/api/v4/projects/$encoded/releases/permalink/latest" "$meta" || true
+        mpp_url="$(jq -r '[.assets.links[]? |
+          select(
+            ((.name // "" | ascii_downcase) | endswith(".mpp")) or
+            ((.direct_asset_url // "" | ascii_downcase) | endswith(".mpp")) or
+            ((.url // "" | ascii_downcase) | endswith(".mpp"))
+          ) |
+          (.direct_asset_url // .url // empty)][0] // empty' "$meta" 2>/dev/null)"
+        [[ "$mpp_url" == /* ]] && mpp_url="https://gitlab.com$mpp_url"
+      fi
+      ;;
+    *)
+      warn "  unsupported host '$provider' — skip"
+      SKIPPED+=("$source_id:unsupported-host"); idx=$((idx+1)); continue
+      ;;
+  esac
+  [[ "$mpp_url" == https://* ]] || mpp_url=""
+  [ -z "$mpp_url" ] && { warn "  no .mpp — skip"; SKIPPED+=("$source_id:no-mpp"); idx=$((idx+1)); continue; }
+  mpp="$WORK/src_$idx.mpp"; rm -f "$mpp"
+  curl_public "$mpp_url" "$mpp" || true
+  unzip -tq "$mpp" >/dev/null 2>&1 || { warn "  bad archive — skip"; SKIPPED+=("$source_id:bad"); idx=$((idx+1)); continue; }
   ex="$WORK/ex_$idx"; rm -rf "$ex"; mkdir -p "$ex"; unzip -oq "$mpp" -d "$ex"
-  ls "$ex"/classes*.dex >/dev/null 2>&1 || { warn "  no dex — skip"; SKIPPED+=("$repo:no-dex"); idx=$((idx+1)); continue; }
+  ls "$ex"/classes*.dex >/dev/null 2>&1 || { warn "  no dex — skip"; SKIPPED+=("$source_id:no-dex"); idx=$((idx+1)); continue; }
   if [ ${#MERGED[@]} -eq 0 ]; then
     n=0; for dx in "$ex"/classes*.dex; do
       if [ $n -eq 0 ]; then cp "$dx" "$STAGE/classes.dex"; else DEXN=$((DEXN+1)); cp "$dx" "$STAGE/classes$((DEXN+1)).dex"; fi; n=$((n+1)); done
@@ -68,7 +120,7 @@ for repo in "${SRCS[@]}"; do
       baksmali disassemble "$dx" -o "$bk" 2>/dev/null && (cd "$bk" && find . -name '*.smali') >> "$SEEN"; done
     (cd "$ex" && find . -type f ! -name 'classes*.dex' ! -path './META-INF/MANIFEST.MF' | while IFS= read -r f; do
         mkdir -p "$STAGE/$(dirname "$f")"; cp "$f" "$STAGE/$f"; done)
-    MERGED+=("$repo"); log "  primary set."
+    MERGED+=("$source_id"); log "  primary set."
   else
     relj="$WORK/reloc_$idx.jar"
     # Discover this source's bundled patch-library subpackages (app/<root>/<sub>) and relocate each
@@ -78,7 +130,7 @@ for repo in "${SRCS[@]}"; do
     SRC_SUBS=$( (cd "$ex" && ls -d app/*/* 2>/dev/null) | awk -F/ '{print $2"/"$3}' | grep -vE '^morphe/patcher$|/extension$' | sort -u )
     RARGS=(); for sp in $SRC_SUBS; do r="${sp%/*}"; sub="${sp#*/}"; RARGS+=("app.$r.$sub" "app.$r.${sub}_$tag"); done
     if [ ${#RARGS[@]} -gt 0 ]; then
-      relocate_jar "$mpp" "$relj" "${RARGS[@]}" || { warn "  reloc fail — skip"; SKIPPED+=("$repo:reloc"); idx=$((idx+1)); continue; }
+      relocate_jar "$mpp" "$relj" "${RARGS[@]}" || { warn "  reloc fail — skip"; SKIPPED+=("$source_id:reloc"); idx=$((idx+1)); continue; }
     else cp "$mpp" "$relj"; fi
     rex="$WORK/rex_$idx"; rm -rf "$rex"; mkdir -p "$rex"; unzip -oq "$relj" -d "$rex"
     (cd "$rex" && find . -type f ! -name 'classes*.dex' ! -path './META-INF/MANIFEST.MF' | while IFS= read -r f; do
@@ -99,7 +151,7 @@ for repo in "${SRCS[@]}"; do
         else warn "  assemble fail"; rm -f "$outdex"; DEXN=$((DEXN-1)); ok=0; break; fi
       fi
     done
-    if [ $ok -eq 1 ]; then MERGED+=("$repo"); log "  merged ($tag)."; else SKIPPED+=("$repo:dex"); fi
+    if [ $ok -eq 1 ]; then MERGED+=("$source_id"); log "  merged ($tag)."; else SKIPPED+=("$source_id:dex"); fi
   fi
   idx=$((idx+1))
 done
@@ -108,7 +160,9 @@ DESC="Aggregated Morphe community patches from ${#MERGED[@]} repositories. Rebui
 { echo "Manifest-Version: 1.0"; echo "Name: Morphe All-in-One"; echo "Description: $DESC"
   echo "Version: ${VERSION#v}"; echo "Author: Morphe community (aggregated)"
   echo "Website: https://github.com/$REPO_SLUG"; echo "Patcher-Version: 1.8.0"; } > "$STAGE/META-INF/MANIFEST.MF"
-log "Packaging ..."; ( cd "$STAGE" && zip -qr -X "$OUT_MPP" . ); ls -l "$OUT_MPP" >&2
+log "Packaging ..."; ( cd "$STAGE" && zip -qr -X "$OUT_MPP" . )
+unzip -tq "$OUT_MPP" >/dev/null || { warn "Final bundle archive is invalid."; exit 1; }
+ls -l "$OUT_MPP" >&2
 DL="https://github.com/$REPO_SLUG/releases/download/$VERSION/morphe-all.mpp"
 jq -n --arg v "$VERSION" --arg u "$DL" --arg c "$CREATED_AT" --arg d "$DESC" \
   '{version:$v, download_url:$u, created_at:$c, description:$d}' > "$ROOT/patches-bundle.json"

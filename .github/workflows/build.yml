@@ -3,7 +3,7 @@ name: Build aggregated bundle
 on:
   workflow_dispatch: {}
   push:
-    paths: [ "sources.json", "build.sh", "tools/**", ".github/workflows/build.yml" ]
+    paths: [ "sources.json", "catalog/**", "build.sh", "tools/**", ".github/workflows/build.yml" ]
   schedule:
     - cron: "17 4 * * *"   # daily 04:17 UTC — pick up upstream patch updates
 
@@ -28,6 +28,11 @@ jobs:
 
       - name: Install smali/baksmali, jq, zip
         run: sudo apt-get update && sudo apt-get install -y smali jq zip unzip
+
+      - name: Validate source configuration
+        run: |
+          bash -n build.sh
+          bash tools/validate-sources.sh
 
       - name: Build merged bundle
         id: build
