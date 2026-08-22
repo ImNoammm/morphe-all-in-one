@@ -12,11 +12,20 @@ Open this link on a device with Morphe installed:
 
 > https://morphe.software/add-source?github=ImNoammm/morphe-all-in-one&name=All-in-One
 
-or, in the app: **Sources → + → Remote**, and paste:
+or, in the app: **Sources → + → Remote**, and paste this exact repository URL:
 
 ```
-github.com/ImNoammm/morphe-all-in-one
+https://github.com/ImNoammm/morphe-all-in-one
 ```
+
+Direct metadata URL (also accepted by Morphe):
+
+```
+https://raw.githubusercontent.com/ImNoammm/morphe-all-in-one/main/patches-bundle.json
+```
+
+If an earlier attempt is still listed as **Metadata N/A**, refresh it or remove it and add it
+again with either URL above.
 
 Morphe fetches `patches-bundle.json` from this repo, downloads the merged `.mpp` from the
 latest Release, and keeps it updated on its normal schedule. Use **Expert mode** to browse
